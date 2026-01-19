@@ -109,6 +109,67 @@
             font-weight: 600;
         }
 
+        .sync-indicator {
+            font-size: 0.8rem;
+            color: var(--accent-green);
+            animation: pulse 2s infinite;
+        }
+
+        .sync-indicator.syncing {
+            color: var(--accent-yellow);
+            animation: spin 1s linear infinite;
+        }
+
+        .sync-indicator.error {
+            color: var(--accent-red);
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* Loading overlay */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(10, 10, 10, 0.9);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid var(--border-accent);
+            border-top-color: var(--accent-yellow);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        .loading-text {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
         /* Screen containers */
         .screen {
             display: none;
@@ -841,6 +902,7 @@
                 </div>
             </div>
             <div class="user-badge" id="userBadge" style="display: none;">
+                <span id="syncIndicator" class="sync-indicator" title="Sincronizado">●</span>
                 <span id="userName">Usuario</span>
                 <span class="role" id="userRole">ADMIN</span>
             </div>
@@ -973,6 +1035,7 @@
             <div class="admin-section">
                 <div class="section-header">
                     <h2>Selecciona tu Bodega</h2>
+                    <button class="btn btn-secondary" onclick="refreshData()" style="font-size: 0.75rem; padding: 10px 16px;">↻ Actualizar</button>
                 </div>
                 <div id="noPendingCounts" class="no-data" style="display: none;">
                     <div class="icon">📭</div>
@@ -1071,6 +1134,12 @@
         </div>
     </div>
 
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Sincronizando datos...</div>
+    </div>
+
     <!-- Finish Modal -->
     <div class="modal-overlay" id="finishModal">
         <div class="modal">
@@ -1095,40 +1164,84 @@
         let currentCountItems = [];
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadState();
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadState();
             setupUploadZone();
         });
 
-        // State Management (localStorage for persistence)
-        function saveState() {
+        // State Management (using shared persistent storage)
+        function showLoading(show = true) {
+            document.getElementById('loadingOverlay').classList.toggle('active', show);
+        }
+
+        function setSyncStatus(status) {
+            const indicator = document.getElementById('syncIndicator');
+            if (indicator) {
+                indicator.className = 'sync-indicator ' + status;
+                indicator.title = status === 'syncing' ? 'Sincronizando...' : status === 'error' ? 'Error de sincronización' : 'Sincronizado';
+            }
+        }
+
+        async function saveState() {
             const state = {
                 inventoryData,
                 bodegas,
                 pendingCounts,
-                completedCounts
+                completedCounts,
+                lastUpdated: new Date().toISOString()
             };
-            localStorage.setItem('inventarioCiclico', JSON.stringify(state));
-        }
-
-        function loadState() {
-            const saved = localStorage.getItem('inventarioCiclico');
-            if (saved) {
-                const state = JSON.parse(saved);
-                inventoryData = state.inventoryData || [];
-                bodegas = state.bodegas || {};
-                pendingCounts = state.pendingCounts || {};
-                completedCounts = state.completedCounts || {};
+            
+            setSyncStatus('syncing');
+            
+            try {
+                await window.storage.set('inventario-ciclico-data', JSON.stringify(state), true);
+                console.log('Estado guardado correctamente');
+                setSyncStatus('');
+            } catch (error) {
+                console.error('Error guardando estado:', error);
+                setSyncStatus('error');
+                // Fallback to localStorage
+                localStorage.setItem('inventarioCiclico', JSON.stringify(state));
             }
         }
 
+        async function loadState() {
+            showLoading(true);
+            try {
+                const result = await window.storage.get('inventario-ciclico-data', true);
+                if (result && result.value) {
+                    const state = JSON.parse(result.value);
+                    inventoryData = state.inventoryData || [];
+                    bodegas = state.bodegas || {};
+                    pendingCounts = state.pendingCounts || {};
+                    completedCounts = state.completedCounts || {};
+                    console.log('Estado cargado desde storage compartido');
+                }
+            } catch (error) {
+                console.log('Storage compartido no disponible, usando localStorage');
+                // Fallback to localStorage
+                const saved = localStorage.getItem('inventarioCiclico');
+                if (saved) {
+                    const state = JSON.parse(saved);
+                    inventoryData = state.inventoryData || [];
+                    bodegas = state.bodegas || {};
+                    pendingCounts = state.pendingCounts || {};
+                    completedCounts = state.completedCounts || {};
+                }
+            }
+            showLoading(false);
+        }
+
         // Navigation
-        function selectRole(role) {
+        async function selectRole(role) {
             currentRole = role;
             document.getElementById('roleScreen').classList.remove('active');
             document.getElementById('userBadge').style.display = 'flex';
             document.getElementById('userRole').textContent = role.toUpperCase();
             document.getElementById('userName').textContent = role === 'admin' ? 'Administrador' : 'Contador';
+
+            // Reload state to get latest data
+            await loadState();
 
             if (role === 'admin') {
                 document.getElementById('adminScreen').classList.add('active');
@@ -1149,6 +1262,20 @@
             document.getElementById('userBadge').style.display = 'none';
             currentRole = null;
             selectedBodega = null;
+        }
+
+        async function refreshData() {
+            await loadState();
+            if (currentRole === 'contador') {
+                showBodegaSelector();
+            } else if (currentRole === 'admin') {
+                if (inventoryData.length > 0) {
+                    showInventory();
+                    showCountConfig();
+                    showResults();
+                }
+            }
+            alert('✅ Datos actualizados');
         }
 
         function showScreen(screenId) {
@@ -1187,7 +1314,7 @@
 
         function processFile(file) {
             const reader = new FileReader();
-            reader.onload = (e) => {
+            reader.onload = async (e) => {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -1210,7 +1337,7 @@
                     bodegas[item.bodega].push(item);
                 });
 
-                saveState();
+                await saveState();
                 showInventory();
             };
             reader.readAsArrayBuffer(file);
@@ -1256,7 +1383,7 @@
         }
 
         // Generate Counts
-        function generateCounts() {
+        async function generateCounts() {
             pendingCounts = {};
             let summary = [];
             
@@ -1290,7 +1417,7 @@
                 summary.push(`${bodega}: ${itemsToSelect} de ${totalRefs} (${Math.round(percentage * 100)}%)`);
             });
 
-            saveState();
+            await saveState();
             alert('✅ Conteos generados exitosamente.\n\n' + summary.join('\n') + '\n\nLos contadores ya pueden seleccionar su bodega.');
             showCountConfig();
             showResults();
@@ -1338,11 +1465,11 @@
             }).join('');
         }
 
-        function resetCounts() {
+        async function resetCounts() {
             if (confirm('⚠️ ¿Estás seguro de reiniciar todos los conteos?\n\nEsto eliminará todos los conteos pendientes y completados.')) {
                 pendingCounts = {};
                 completedCounts = {};
-                saveState();
+                await saveState();
                 document.getElementById('countConfigSection').style.display = 'none';
                 document.getElementById('resultsSection').style.display = 'none';
                 alert('Conteos reiniciados. Puedes generar nuevos conteos.');
@@ -1698,7 +1825,7 @@
             document.getElementById('finishModal').classList.remove('active');
         }
 
-        function finishCounting() {
+        async function finishCounting() {
             closeModal();
 
             // Mark all as complete
@@ -1719,7 +1846,7 @@
             // Update pending counts
             pendingCounts[selectedBodega] = pendingCounts[selectedBodega].filter(i => i.estado === 'pendiente');
 
-            saveState();
+            await saveState();
 
             // Show counter results
             showCounterResults();
